@@ -1,0 +1,4 @@
+if (price > upper_bollinger_band and period == 15) or (rsi < 30 and period == 30):  
+    print("Buy Signal")  
+elif (price < lower_bollinger_band and period == 15) or (rsi > 70 and period == 30):  
+    print("Sell Signal")  
