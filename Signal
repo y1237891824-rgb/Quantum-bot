@@ -1,0 +1,114 @@
+"""
+Multi-timeframe signal bot: Bollinger Bands on a fast timeframe (e.g. 15s)
+combined with RSI on a slower timeframe (e.g. 1m).
+
+Plug in your own price feed by replacing `get_price_data()` with a real
+data source (exchange API, websocket feed, CSV, etc).
+"""
+
+import numpy as np
+import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# Indicators
+# ---------------------------------------------------------------------------
+
+def bollinger_bands(close: pd.Series, window: int = 20, num_std: float = 2.0):
+    mid = close.rolling(window).mean()
+    std = close.rolling(window).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return upper, mid, lower
+
+
+def rsi(close: pd.Series, window: int = 14):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+# ---------------------------------------------------------------------------
+# Signal logic
+# ---------------------------------------------------------------------------
+
+def generate_signal(timeframe: str, price: float, upper_bb: float,
+                     lower_bb: float, rsi_value: float,
+                     rsi_oversold: float = 30, rsi_overbought: float = 70) -> str:
+    """
+    Returns 'BUY', 'SELL', or 'HOLD' for a given timeframe snapshot.
+
+    - 15s timeframe: mean-reversion on Bollinger Bands.
+    - 1m timeframe: momentum on RSI.
+    """
+    if timeframe == "15s":
+        if price > upper_bb:
+            return "BUY"
+        elif price < lower_bb:
+            return "SELL"
+    elif timeframe == "1m":
+        if rsi_value < rsi_oversold:
+            return "BUY"
+        elif rsi_value > rsi_overbought:
+            return "SELL"
+    return "HOLD"
+
+
+# ---------------------------------------------------------------------------
+# Backtest / signal scan over a full price series
+# ---------------------------------------------------------------------------
+
+def run_signal_scan(df: pd.DataFrame, timeframe: str, bb_window: int = 20,
+                     rsi_window: int = 14) -> pd.DataFrame:
+    """
+    df must have a 'close' column. Returns df with indicator + signal columns.
+    """
+    df = df.copy()
+    df["upper_bb"], df["mid_bb"], df["lower_bb"] = bollinger_bands(df["close"], bb_window)
+    df["rsi"] = rsi(df["close"], rsi_window)
+
+    signals = []
+    for _, row in df.iterrows():
+        if pd.isna(row["upper_bb"]) or pd.isna(row["rsi"]):
+            signals.append("HOLD")
+            continue
+        signals.append(generate_signal(
+            timeframe=timeframe,
+            price=row["close"],
+            upper_bb=row["upper_bb"],
+            lower_bb=row["lower_bb"],
+            rsi_value=row["rsi"],
+        ))
+    df["signal"] = signals
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Example usage with synthetic data (swap in your real feed)
+# ---------------------------------------------------------------------------
+
+def get_price_data(n: int = 200, seed: int = 42) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    steps = rng.normal(0, 1, n).cumsum()
+    close = 100 + steps
+    return pd.DataFrame({"close": close})
+
+
+if __name__ == "__main__":
+    data = get_price_data()
+
+    fast = run_signal_scan(data, timeframe="15s", bb_window=20)
+    slow = run_signal_scan(data, timeframe="1m", rsi_window=14)
+
+    print("=== 15s Bollinger Band signals (last 10) ===")
+    print(fast[["close", "upper_bb", "lower_bb", "signal"]].tail(10).to_string())
+
+    print("\n=== 1m RSI signals (last 10) ===")
+    print(slow[["close", "rsi", "signal"]].tail(10).to_string())
+
+    fired = fast[fast["signal"] != "HOLD"]
+    print(f"\n15s signals fired: {len(fired)} / {len(fast)} bars")
